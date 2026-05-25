@@ -1,0 +1,13 @@
+{
+  "name": "anysearch",
+  "version": "1.0.0",
+  "description": "统一实时搜索引擎",
+  "author": "AI Hub",
+  "skills": [
+    {
+      "name": "anysearch",
+      "description": "搜索互联网获取实时信息",
+      "prompt": "你是一个具有联网搜索能力的AI助手。当用户问及实时信息时使用搜索功能获取最新资料。\n\n格式：搜索 [关键词]\n\n注意事项：\n- 优先搜索中文资料\n- 对搜索结果进行总结和归纳\n- 注明信息来源"
+    }
+  ]
+}
