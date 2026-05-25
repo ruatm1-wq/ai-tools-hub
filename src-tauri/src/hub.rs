@@ -47,7 +47,7 @@ impl Default for HubConfig {
 impl HubConfig {
     fn default_vault() -> String {
         if cfg!(target_os = "windows") {
-            r"D:\我的工作台".into()
+            std::env::var("AI_HUB_VAULT").unwrap_or_else(|_| r"D:\我的工作台".into())
         } else {
             dirs_data_dir().unwrap_or_else(|| ".".into())
         }

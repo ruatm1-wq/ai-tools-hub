@@ -37,7 +37,7 @@ fn default_allowed_dirs() -> Vec<PathBuf> {
         home.join("Documents"),               // documents
         home.join("Downloads"),               // downloads
         // Windows-specific vault path
-        PathBuf::from(if cfg!(target_os = "windows") { r"D:\我的工作台" } else { "/tmp/ai-hub-vault" }),
+        { std::env::var("AI_HUB_VAULT").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(if cfg!(target_os = "windows") { r"D:\我的工作台" } else { "/tmp/ai-hub-vault" })) },
     ]
 }
 

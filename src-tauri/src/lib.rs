@@ -49,7 +49,7 @@ fn desk_dir() -> PathBuf { let b = cfg_dir().unwrap_or_else(|_| PathBuf::from(".
 fn vault_path() -> PathBuf {
     if let Ok(cfg) = hub_config().try_lock() { if !cfg.vault_path.is_empty() { return PathBuf::from(&cfg.vault_path); } }
     if let Ok(env) = std::env::var("AI_HUB_VAULT") { return PathBuf::from(env); }
-    PathBuf::from(r"D:\我的工作台")
+    std::env::var("AI_HUB_VAULT").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(r"D:\我的工作台"))
 }
 fn path_guard() -> &'static PathGuard { static P: OnceLock<PathGuard> = OnceLock::new(); P.get_or_init(|| { let mut pg = PathGuard::default(); pg.add_allowed(vault_path()); pg }) }
 
@@ -280,7 +280,7 @@ async fn learn_skill_from_conversation(messages: Vec<ChatMsg>) -> Result<Install
 #[tauri::command] async fn add_cron_job(j: desk::CronJob) -> Result<(), String> { cron_scheduler_inner().add(j).await; Ok(()) }
 #[tauri::command] async fn remove_cron_job(id: String) -> Result<(), String> { cron_scheduler_inner().remove(&id).await; Ok(()) }
 #[tauri::command] async fn get_desk_notes() -> Result<Vec<desk::DeskNote>, String> { Ok(desk::list_desk_notes(&desk_dir())) }
-#[tauri::command] async fn write_desk_note(f: String, c: String) -> Result<(), String> { std::fs::write(desk_dir().join(&f), &c).map_err(|e| e.to_string()) }
+#[tauri::command] async fn write_desk_note(f: String, c: String) -> Result<(), String> { if f.contains("..") || f.contains("/") || f.contains("\\") { return Err("Invalid filename".into()); } std::fs::write(desk_dir().join(&f), &c).map_err(|e| e.to_string()) }
 #[tauri::command] async fn get_hub_config() -> Result<HubConfig, String> { let c = hub_config().lock().await; Ok(c.clone()) }
 #[tauri::command] async fn set_hub_config(cfg: HubConfig) -> Result<(), String> { let mut c = hub_config().lock().await; *c = cfg.clone(); save_hub_config(&cfg); Ok(()) }
 #[tauri::command] async fn get_hub_url() -> Result<String, String> { Ok("http://localhost:27125".into()) }
