@@ -1,0 +1,29 @@
+{
+  "productName": "AI Tools Hub",
+  "version": "0.1.0",
+  "identifier": "com.aitools.hub",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AI Tools Hub",
+        "width": 1200,
+        "height": 800,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  }
+}
