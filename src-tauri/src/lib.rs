@@ -14,6 +14,7 @@ mod desk;
 mod sandbox;
 mod knowledge;
 mod subagent;
+mod tool_layer;
 pub mod cli;
 mod search;
 mod browser;
