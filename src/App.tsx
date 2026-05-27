@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { Moon, Sun, Send, Minus, Square, X, Copy, Plus, Trash2, Globe, History, Brain, Link2 } from 'lucide-react';
+import ToolCallBlock from './components/ToolCallBlock';
 
 const win = getCurrentWindow();
 
@@ -52,6 +53,14 @@ function App() {
   const termRef = useRef<HTMLDivElement>(null);
   const ptyTestRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef('');
+  const [activeToolCalls, setActiveToolCalls] = useState<ToolCallData[]>([]);
+
+  interface ToolCallData {
+    name: string;
+    args?: Record<string, unknown>;
+    result?: string;
+    status: 'running' | 'success' | 'error';
+  }
 
   const messages = messagesMap[activeTool] || [];
   const ct = tools.find(t => t.id === activeTool);
@@ -111,9 +120,27 @@ function App() {
       try { const ctx: string[] = await invoke('peek_context'); if (ctx.length) sp += '\n\n[Context]\n' + ctx.slice(-3).join('\n') + '\n[/Context]'; } catch (e) {}
       const emptyMsg: ChatMsg = { role: 'assistant', content: '', toolId: activeTool };
       setMessagesMap(p => ({...p, [activeTool]: [...newMsgs, emptyMsg]}));
+      // Tool call event listeners
+      const unToolStart = await listen<any>('tool-call-start', ev => {
+        const tools = ev.payload?.tools || [];
+        setActiveToolCalls(tools.map((t: any) => ({
+          name: t.name,
+          args: t.args,
+          status: 'running' as const,
+        })));
+      });
+      const unToolEnd = await listen<any>('tool-call-end', ev => {
+        const results = ev.payload?.results || [];
+        setActiveToolCalls((prev: ToolCallData[]) => prev.map((call, i) => ({
+          ...call,
+          status: results[i]?.success ? 'success' as const : 'error' as const,
+          result: typeof results[i]?.content === 'string' ? results[i].content.slice(0, 1000) : JSON.stringify(results[i]),
+        })));
+      });
+
       invoke('chat_completion_stream', { toolId: activeTool, messages: newMsgs, systemPrompt: sp });
       const unChunk = await listen<string>('stream-chunk', ev => { streamRef.current += ev.payload; setMessagesMap(p => { const msgs = [...(p[activeTool]||[])]; if (msgs.length) { const last = {...msgs[msgs.length-1]}; last.content += ev.payload; msgs[msgs.length-1] = last; } return {...p, [activeTool]: msgs}; }); });
-      const unDone = await listen<string>('stream-done', async () => { unChunk(); unDone(); const c = streamRef.current; streamRef.current = ''; if (c) { saveOneFact(activeTool, q, c); try { setContextItems(await invoke<string[]>('peek_context')); refreshMemories(); } catch(e) {} } });
+      const unDone = await listen<string>('stream-done', async () => { unChunk(); unDone(); unToolStart(); unToolEnd(); const c = streamRef.current; streamRef.current = ''; setActiveToolCalls([]); if (c) { saveOneFact(activeTool, q, c); try { setContextItems(await invoke<string[]>('peek_context')); refreshMemories(); } catch(e) {} } });
     } catch (e: any) { setMessagesMap(p => ({...p, [activeTool]: [...newMsgs, { role: 'assistant', content: 'Error: ' + e, toolId: activeTool }] })); }
   };
 
@@ -226,6 +253,10 @@ function App() {
                 <div className={"max-w-[70%] rounded-xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap " + (msg.role === 'user' ? 'bg-accent-muted border border-accent/20' : 'bg-bg-tertiary')}>
                   <div className="text-[10px] text-text-dim mb-1">{msg.role === 'user' ? 'You' : (toolById(msg.toolId)?.name || 'AI')}</div>
                   {msg.content || (msg.role === 'assistant' ? <span className="text-text-dim animate-pulse">...</span> : '')}
+                  {/* Show tool call status inside assistant bubble when streaming */}
+                  {msg.role === 'assistant' && activeToolCalls.length > 0 && !msg.content && (
+                    <ToolCallBlock calls={activeToolCalls} />
+                  )}
                   {msg.role === 'assistant' && msg.content && (
                     <div className="mt-2 pt-2 border-t border-border">
                       <button onClick={() => navigator.clipboard.writeText(msg.content)} className="flex items-center gap-1 text-xs text-text-dim hover:text-text-muted"><Copy size={11} /> Copy</button>
@@ -234,6 +265,15 @@ function App() {
                 </div>
               </div>
             ))}
+            {/* Standalone tool call block when not inside a message bubble */}
+            {activeToolCalls.length > 0 && messages.length > 0 && messages[messages.length-1]?.content !== '' && (
+              <div className="flex justify-start">
+                <div className="max-w-[70%] rounded-xl px-4 py-3 bg-bg-tertiary">
+                  <div className="text-[10px] text-text-dim mb-1">AI Tools</div>
+                  <ToolCallBlock calls={activeToolCalls} />
+                </div>
+              </div>
+            )}
           </div>
           <div className="p-4">
             <div className="relative">
