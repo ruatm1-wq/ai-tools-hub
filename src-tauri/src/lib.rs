@@ -496,7 +496,14 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|_app| {
             index_vault_async(); // background thread, doesn't block UI
-            let _ = cron_scheduler_inner();
+            // Spawn cron scheduler in its own tokio runtime
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Runtime::new().expect("Runtime");
+                rt.block_on(async {
+                    cron_scheduler_inner();
+                    futures::future::pending::<()>().await;
+                });
+            });
             let watch = desk_dir();
             std::thread::spawn(move || desk::start_watcher(watch, |e| { eprintln!("[desk] {:?} {}", e.kind, e.path); }));
             Ok(())
