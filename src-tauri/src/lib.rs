@@ -145,34 +145,119 @@ async fn chat_completion_stream(
     let mut msgs = vec![serde_json::json!({"role": "system", "content": sp})];
     for m in &messages { msgs.push(serde_json::json!({"role": m.role, "content": m.content})); }
 
-    let resp = http_client()
-        .post(format!("{}/v1/chat/completions", tool.api_base))
-        .header("Authorization", format!("Bearer {}", tool.api_key))
-        .json(&serde_json::json!({"model": tool.model_name, "messages": msgs, "stream": true}))
-        .send().await.map_err(|e| format!("API: {}", e))?;
-
+    // ── Tool Calling Loop ──
+    // Round 1: send with tools[] param
+    //         → if LLM calls tools → execute → append results → next round
+    // Round 2+: send messages only (results from prev round)
+    //         → stream final text to frontend
+    // Max 5 rounds to prevent infinite loops
+    let tool_defs = tool_layer::global_registry().list_defs().await;
+    let has_tools = !tool_defs.is_empty();
+    let max_rounds: usize = 5;
     let mut full = String::new();
     use futures::StreamExt;
-    let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Stream: {}", e))?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(pos) = buf.find('\n') {
-            let line = buf[..pos].trim().to_string();
-            buf = buf[pos + 1..].to_string();
-            if line.starts_with("data: ") {
-                let d = &line[6..];
-                if d == "[DONE]" { app_handle.emit("stream-done", "").unwrap_or(()); }
-                else if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
-                    if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
-                        full.push_str(delta);
-                        app_handle.emit("stream-chunk", delta).unwrap_or(());
+
+    for round in 0..max_rounds {
+        let mut body = serde_json::json!({
+            "model": tool.model_name,
+            "messages": msgs,
+            "stream": true,
+        });
+        // Only send tool definitions on first round
+        if has_tools && round == 0 {
+            body["tools"] = serde_json::to_value(&tool_defs).unwrap_or_default();
+        }
+
+        let resp = http_client()
+            .post(format!("{}/v1/chat/completions", tool.api_base))
+            .header("Authorization", format!("Bearer {}", tool.api_key))
+            .json(&body)
+            .send().await.map_err(|e| format!("API: {}", e))?;
+
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        let mut acc = tool_layer::ToolCallAccumulator::default();
+        let mut round_content = String::new();
+        let mut has_tool_calls = false;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Stream: {}", e))?;
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(pos) = buf.find('\n') {
+                let line = buf[..pos].trim().to_string();
+                buf = buf[pos + 1..].to_string();
+                if line.starts_with("data: ") {
+                    let d = &line[6..];
+                    if d == "[DONE]" { break; }
+                    else if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
+                        // Check for tool_calls delta
+                        if has_tools && v["choices"][0]["delta"]["tool_calls"].is_array() {
+                            has_tool_calls = true;
+                            acc.feed(&v);
+                        }
+                        // Check for content delta
+                        if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
+                            round_content.push_str(delta);
+                            // Only stream to frontend on the final round
+                            if round == max_rounds - 1 || !has_tools {
+                                full.push_str(delta);
+                                app_handle.emit("stream-chunk", delta).unwrap_or(());
+                            }
+                        }
                     }
                 }
             }
         }
+
+        if has_tool_calls && acc.has_pending() {
+            let calls = acc.collect();
+            // Notify frontend about tool calls
+            app_handle.emit("tool-call-start", &serde_json::json!({
+                "tools": calls.iter().map(|c| serde_json::json!({
+                    "name": c.name,
+                    "args": c.arguments,
+                })).collect::<Vec<_>>()
+            })).unwrap_or(());
+
+            // Store assistant message with tool_calls
+            let tool_calls_json: Vec<serde_json::Value> = calls.iter().enumerate().map(|(i, c)| {
+                serde_json::json!({
+                    "id": format!("call_{}_{}", round, i),
+                    "type": "function",
+                    "function": {
+                        "name": c.name,
+                        "arguments": serde_json::to_string(&c.arguments).unwrap_or_default()
+                    }
+                })
+            }).collect();
+            msgs.push(serde_json::json!({
+                "role": "assistant",
+                "content": round_content,
+                "tool_calls": tool_calls_json,
+            }));
+
+            // Execute tool calls and get results
+            let results = tool_layer::execute_tool_calls(
+                &tool_layer::global_registry(),
+                &calls,
+            ).await;
+            for r in &results {
+                msgs.push(r.clone());
+            }
+
+            // Notify frontend about tool results
+            app_handle.emit("tool-call-end", &serde_json::json!({
+                "results": results,
+            })).unwrap_or(());
+
+            continue; // Next round with tool results in context
+        }
+
+        // No tool calls — this is the final text response
+        full = round_content;
+        break;
     }
+
     app_handle.emit("stream-done", "").unwrap_or(());
     Ok(AiResponse { content: full, tokens: 0 })
 }
@@ -350,6 +435,11 @@ fn context_buffer() -> &'static std::sync::Mutex<Vec<String>> { CONTEXT_BUFFER.g
 pub fn run() {
     let saved = load_hub_config();
     if let Ok(mut c) = hub_config().try_lock() { *c = saved; }
+    // Initialize tool calling layer
+    tauri::async_runtime::spawn(async {
+        tool_layer::init_builtin_tools().await;
+    });
+
     tauri::Builder::default()
         .setup(|_app| {
             index_vault_async(); // background thread, doesn't block UI
