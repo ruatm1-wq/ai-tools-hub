@@ -103,15 +103,29 @@ impl ToolRegistry {
 
 // ── Global Registry ──
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 static GLOBAL_REGISTRY: OnceLock<Arc<ToolRegistry>> = OnceLock::new();
+static TOOLS_READY: AtomicBool = AtomicBool::new(false);
 
 /// 获取全局 ToolRegistry（懒初始化）
 pub fn global_registry() -> Arc<ToolRegistry> {
     GLOBAL_REGISTRY
         .get_or_init(|| Arc::new(ToolRegistry::new()))
         .clone()
+}
+
+/// 等待工具初始化完成
+pub async fn ensure_ready() {
+    while !TOOLS_READY.load(Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// 标记初始化完成（在 init_builtin_tools 末尾调用）
+pub fn mark_ready() {
+    TOOLS_READY.store(true, Ordering::Release);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -419,6 +433,8 @@ pub async fn init_builtin_tools() {
         },
         make_handler(handle_run_code),
     ).await;
+
+    mark_ready();
 }
 
 // ═══════════════════════════════════════════════════════════

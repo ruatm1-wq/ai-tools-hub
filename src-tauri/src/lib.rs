@@ -22,7 +22,7 @@ mod pty_manager;
 
 use memory::MemoryStore;
 use personality::default_personalities;
-use hub::{start_hub, HubConfig};
+use hub::HubConfig;
 use skill_bundle::InstalledSkill;
 use sandbox::{PathGuard, PermissionLevel};
 
@@ -136,7 +136,10 @@ async fn chat_completion_stream(
         return Ok(AiResponse { content: response, tokens: 0 });
     }
 
-    // API tool
+    // API tool — validate tool_type
+    if tool.tool_type != "api" {
+        return Err(format!("Unknown tool_type '{}' for tool '{}'. Expected 'api' or 'process'.", tool.tool_type, tool.name));
+    }
     if tool.api_key.is_empty() { return Err(format!("API Key not set: {}", tool.name)); }
     let sp = if system_prompt.is_empty() { "You are a helpful assistant.".into() } else { system_prompt };
     let last_msg = messages.last().map(|m| m.content.clone()).unwrap_or_default();
@@ -151,6 +154,7 @@ async fn chat_completion_stream(
     // Round 2+: send messages only (results from prev round)
     //         → stream final text to frontend
     // Max 5 rounds to prevent infinite loops
+    tool_layer::ensure_ready().await;
     let tool_defs = tool_layer::global_registry().list_defs().await;
     let has_tools = !tool_defs.is_empty();
     let max_rounds: usize = 5;
@@ -492,15 +496,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|_app| {
             index_vault_async(); // background thread, doesn't block UI
-            std::thread::spawn(|| {
-                let rt = tokio::runtime::Runtime::new().expect("Runtime");
-                let _rt: &'static tokio::runtime::Runtime = Box::leak(Box::new(rt));
-                _rt.block_on(async {
-                    let _ = start_hub();
-                    let _ = cron_scheduler_inner();
-                    futures::future::pending::<()>().await;
-                });
-            });
+            let _ = cron_scheduler_inner();
             let watch = desk_dir();
             std::thread::spawn(move || desk::start_watcher(watch, |e| { eprintln!("[desk] {:?} {}", e.kind, e.path); }));
             Ok(())
@@ -514,7 +510,6 @@ pub fn run() {
             save_memory, search_memory, get_recent_memories, delete_memory,
             obsidian_list_dir, obsidian_read_fs, obsidian_write_fs,
             push_context, pop_context, peek_context, clear_context,
-            get_hub_url, get_hub_config, set_hub_config,
             get_cron_jobs, add_cron_job, remove_cron_job,
             get_desk_notes, write_desk_note,
             check_path_access, get_sandbox_status,

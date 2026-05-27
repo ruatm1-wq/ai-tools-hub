@@ -11,6 +11,7 @@ pub struct PtySession {
     stdin: Arc<Mutex<Box<dyn Write + Send>>>,
     output_buffer: Arc<Mutex<String>>,
     _reader_thread: Option<thread::JoinHandle<()>>,
+    child: Option<std::process::Child>,
 }
 
 pub struct PtyManager {
@@ -53,6 +54,7 @@ impl PtyManager {
             stdin: Arc::new(Mutex::new(Box::new(stdin))),
             output_buffer,
             _reader_thread: Some(reader),
+            child: Some(child),
         });
         Ok(())
     }
@@ -86,7 +88,16 @@ impl PtyManager {
         }
     }
 
-    pub fn close_session(&self, tool_id: &str) { if let Ok(mut s) = self.sessions.lock() { s.remove(tool_id); } }
+    pub fn close_session(&self, tool_id: &str) {
+        if let Ok(mut s) = self.sessions.lock() {
+            if let Some(mut session) = s.remove(tool_id) {
+                if let Some(ref mut child) = session.child {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
     pub fn list_sessions(&self) -> Vec<String> {
         self.sessions.lock().map(|s| s.keys().cloned().collect()).unwrap_or_default()
     }
