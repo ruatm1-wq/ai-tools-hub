@@ -198,11 +198,9 @@ async fn chat_completion_stream(
                         // Check for content delta
                         if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
                             round_content.push_str(delta);
-                            // Only stream to frontend on the final round
-                            if round == max_rounds - 1 || !has_tools {
-                                full.push_str(delta);
-                                app_handle.emit("stream-chunk", delta).unwrap_or(());
-                            }
+                            // Content is buffered during streaming.
+                            // If this round ends with no tool calls, we flush below.
+                            // If tool calls happen, content is thrown away (LLM re-synthesizes with tool results).
                         }
                     }
                 }
@@ -253,8 +251,11 @@ async fn chat_completion_stream(
             continue; // Next round with tool results in context
         }
 
-        // No tool calls — this is the final text response
-        full = round_content;
+        // No tool calls — flush content to frontend
+        if !round_content.is_empty() {
+            full = round_content;
+            app_handle.emit("stream-chunk", &full).unwrap_or(());
+        }
         break;
     }
 
