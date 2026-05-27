@@ -267,7 +267,55 @@ async fn chat_completion_stream(
 async fn create_subagent(parent_id: String, tool_id: String, task: String) -> Result<String, String> {
     let id = subagent_manager().create(&parent_id, &tool_id, &task);
     let id2 = id.clone();
-    tokio::spawn(async move { subagent_manager().complete(&id2, &format!("[Sub-Agent {} done]", id2), "done"); });
+    let tid = tool_id.clone();
+    let tk = task.clone();
+
+    // Spawn a real task that calls the API to execute the sub-agent's task
+    tokio::spawn(async move {
+        let tools = load_tools();
+        let tool = match tools.iter().find(|t| t.id == tid) {
+            Some(t) => t.clone(),
+            None => {
+                subagent_manager().complete(&id2, "Tool not found", "error");
+                return;
+            }
+        };
+
+        if tool.tool_type != "api" || tool.api_key.is_empty() {
+            subagent_manager().complete(&id2, "Only API tools are supported for sub-agents", "error");
+            return;
+        }
+
+        let sp = format!("You are a focused sub-agent. Complete this task concisely:\n\n{}", tk);
+        let resp = http_client()
+            .post(format!("{}/v1/chat/completions", tool.api_base))
+            .header("Authorization", format!("Bearer {}", tool.api_key))
+            .json(&serde_json::json!({
+                "model": tool.model_name,
+                "messages": [
+                    {"role": "system", "content": sp},
+                    {"role": "user", "content": tk}
+                ],
+                "stream": false
+            }))
+            .send().await;
+
+        match resp {
+            Ok(r) => {
+                if let Ok(data) = r.json::<serde_json::Value>().await {
+                    let content = data["choices"][0]["message"]["content"]
+                        .as_str().unwrap_or("(no response)").to_string();
+                    subagent_manager().complete(&id2, &content, "done");
+                } else {
+                    subagent_manager().complete(&id2, "Failed to parse API response", "error");
+                }
+            }
+            Err(e) => {
+                subagent_manager().complete(&id2, &format!("API error: {}", e), "error");
+            }
+        }
+    });
+
     Ok(id)
 }
 #[tauri::command]
